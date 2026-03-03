@@ -16,7 +16,8 @@ class LogView extends StatefulWidget {
 
 class _LogViewState extends State<LogView> {
   late LogController _controller;
-  bool _isLoading = true;
+  Key _futureKey =
+      UniqueKey(); // Task 3: Trigger untuk auto-refresh FutureBuilder
 
   // Controller untuk menangkap input di dalam State
   final TextEditingController _titleController = TextEditingController();
@@ -31,66 +32,45 @@ class _LogViewState extends State<LogView> {
   void initState() {
     super.initState();
     _controller = LogController();
-
-    // Memberikan kesempatan UI merender widget awal sebelum proses berat dimulai
-    Future.microtask(() => _initDatabase());
+    // Task 3: FutureBuilder akan handle fetch otomatis di build()
   }
 
-  Future<void> _initDatabase() async {
-    setState(() => _isLoading = true);
+  // Task 3: Future-Based Method untuk FutureBuilder
+  Future<List<LogModel>> _fetchLogs() async {
     try {
       await LogHelper.writeLog(
-        "UI: Memulai inisialisasi database...",
+        "UI: [FutureBuilder] Connecting to MongoDB Atlas...",
         source: "log_view.dart",
       );
 
-      // Mencoba koneksi ke MongoDB Atlas (Cloud)
-      await LogHelper.writeLog(
-        "UI: Menghubungi MongoService.connect()...",
-        source: "log_view.dart",
-      );
-
-      // Mengaktifkan kembali koneksi dengan timeout 15 detik
+      // Task 3: Connect ke MongoDB Atlas dengan timeout
       await MongoService().connect().timeout(
         const Duration(seconds: 15),
-        onTimeout: () => throw Exception(
-          "Koneksi Cloud Timeout. Periksa sinyal/IP Whitelist.",
-        ),
+        onTimeout: () =>
+            throw Exception("Koneksi Timeout. Periksa sinyal/IP Whitelist."),
       );
 
       await LogHelper.writeLog(
-        "UI: Koneksi MongoService BERHASIL.",
+        "UI: [FutureBuilder] Connected successfully.",
         source: "log_view.dart",
       );
 
-      // Mengambil data log dari Cloud
-      await LogHelper.writeLog(
-        "UI: Memanggil controller.loadFromDisk()...",
-        source: "log_view.dart",
-      );
-
-      await _controller.loadFromDisk();
+      // Task 3: Ambil data dari MongoDB Atlas Cloud
+      final logs = await MongoService().getLogs();
 
       await LogHelper.writeLog(
-        "UI: Data berhasil dimuat ke Notifier.",
+        "UI: [FutureBuilder] Fetched ${logs.length} logs from Cloud.",
         source: "log_view.dart",
       );
+
+      return logs;
     } catch (e) {
       await LogHelper.writeLog(
-        "UI: Error - $e",
+        "UI: [FutureBuilder] Error - $e",
         source: "log_view.dart",
         level: 1,
       );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Masalah: $e"), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      // Apapun yang terjadi, loading harus mati
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      rethrow; // Task 3: Lempar error ke FutureBuilder.hasError
     }
   }
 
@@ -226,6 +206,9 @@ class _LogViewState extends State<LogView> {
                       category: _selectedCategory,
                     )
                     .then((_) {
+                      // Task 3: Auto-refresh dengan ganti key FutureBuilder
+                      setState(() => _futureKey = UniqueKey());
+
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text('✓ Data berhasil disimpan ke Cloud!'),
@@ -353,6 +336,9 @@ class _LogViewState extends State<LogView> {
                     )
                     .then((_) {
                       if (mounted) {
+                        // Task 3: Auto-refresh dengan ganti key FutureBuilder
+                        setState(() => _futureKey = UniqueKey());
+
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
                             content: Text('✓ Data berhasil diupdate di Cloud!'),
@@ -442,7 +428,10 @@ class _LogViewState extends State<LogView> {
             padding: const EdgeInsets.all(12.0),
             child: TextField(
               controller: _searchController,
-              onChanged: (value) => _controller.searchLog(value),
+              onChanged: (value) {
+                // Task 3: Trigger rebuild untuk apply filter
+                setState(() {});
+              },
               decoration: InputDecoration(
                 labelText: "Cari Catatan...",
                 hintText: "Ketik judul atau deskripsi",
@@ -453,7 +442,7 @@ class _LogViewState extends State<LogView> {
                         onPressed: () {
                           setState(() {
                             _searchController.clear();
-                            _controller.searchLog('');
+                            // Task 3: setState cukup untuk trigger rebuild
                           });
                         },
                       )
@@ -466,13 +455,14 @@ class _LogViewState extends State<LogView> {
               ),
             ),
           ),
-          // HOMEWORK: Use filteredLogsNotifier for search
+          // Task 3: FutureBuilder untuk async data dari MongoDB Atlas
           Expanded(
-            child: ValueListenableBuilder<List<LogModel>>(
-              valueListenable: _controller.filteredLogsNotifier,
-              builder: (context, currentLogs, child) {
-                // 1. Tampilan Loading saat koneksi ke Cloud
-                if (_isLoading) {
+            child: FutureBuilder<List<LogModel>>(
+              key: _futureKey, // Task 3: Ganti key untuk trigger refresh
+              future: _fetchLogs(),
+              builder: (context, snapshot) {
+                // Task 3 Requirement #2: Loading State
+                if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -485,7 +475,48 @@ class _LogViewState extends State<LogView> {
                   );
                 }
 
-                // 2. Tampilan jika loading sudah selesai tapi data kosong
+                // Task 3: Error State
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.cloud_off,
+                          size: 64,
+                          color: Colors.red,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          "Gagal: ${snapshot.error}",
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 10),
+                        ElevatedButton(
+                          onPressed: () {
+                            // Task 3: Retry koneksi dengan ganti key
+                            setState(() => _futureKey = UniqueKey());
+                          },
+                          child: const Text("Coba Lagi"),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                // Task 3: Success - ambil data dari snapshot
+                final allLogs = snapshot.data ?? [];
+
+                // Task 3: Apply search filter di UI layer
+                final currentLogs = _searchController.text.isEmpty
+                    ? allLogs
+                    : allLogs.where((log) {
+                        final query = _searchController.text.toLowerCase();
+                        return log.title.toLowerCase().contains(query) ||
+                            log.description.toLowerCase().contains(query);
+                      }).toList();
+
+                // Task 3 Requirement #3: Pesan "Data Kosong" dari MongoDB
                 if (currentLogs.isEmpty && _searchController.text.isEmpty) {
                   return Center(
                     child: Column(
@@ -620,6 +651,12 @@ class _LogViewState extends State<LogView> {
 
                         try {
                           await _controller.removeLog(realIndex);
+
+                          // Task 3: Auto-refresh dengan ganti key FutureBuilder
+                          if (mounted) {
+                            setState(() => _futureKey = UniqueKey());
+                          }
+
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(

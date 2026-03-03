@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:logbook_app_modul4/features/logbook/log_controller.dart';
 import 'package:logbook_app_modul4/features/logbook/models/log_model.dart';
 import 'package:logbook_app_modul4/features/onboarding/onboarding_view.dart';
+import 'package:logbook_app_modul4/services/mongo_service.dart';
+import 'package:logbook_app_modul4/helpers/log_helper.dart';
 
 class LogView extends StatefulWidget {
   final String username;
@@ -13,7 +15,8 @@ class LogView extends StatefulWidget {
 }
 
 class _LogViewState extends State<LogView> {
-  final LogController _controller = LogController();
+  late LogController _controller;
+  bool _isLoading = true;
 
   // Controller untuk menangkap input di dalam State
   final TextEditingController _titleController = TextEditingController();
@@ -23,6 +26,73 @@ class _LogViewState extends State<LogView> {
   // HOMEWORK: Category management
   String _selectedCategory = 'Pribadi';
   final List<String> _categories = ['Pribadi', 'Pekerjaan', 'Kuliah', 'Urgent'];
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = LogController();
+
+    // Memberikan kesempatan UI merender widget awal sebelum proses berat dimulai
+    Future.microtask(() => _initDatabase());
+  }
+
+  Future<void> _initDatabase() async {
+    setState(() => _isLoading = true);
+    try {
+      await LogHelper.writeLog(
+        "UI: Memulai inisialisasi database...",
+        source: "log_view.dart",
+      );
+
+      // Mencoba koneksi ke MongoDB Atlas (Cloud)
+      await LogHelper.writeLog(
+        "UI: Menghubungi MongoService.connect()...",
+        source: "log_view.dart",
+      );
+
+      // Mengaktifkan kembali koneksi dengan timeout 15 detik
+      await MongoService().connect().timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw Exception(
+          "Koneksi Cloud Timeout. Periksa sinyal/IP Whitelist.",
+        ),
+      );
+
+      await LogHelper.writeLog(
+        "UI: Koneksi MongoService BERHASIL.",
+        source: "log_view.dart",
+      );
+
+      // Mengambil data log dari Cloud
+      await LogHelper.writeLog(
+        "UI: Memanggil controller.loadFromDisk()...",
+        source: "log_view.dart",
+      );
+
+      await _controller.loadFromDisk();
+
+      await LogHelper.writeLog(
+        "UI: Data berhasil dimuat ke Notifier.",
+        source: "log_view.dart",
+      );
+    } catch (e) {
+      await LogHelper.writeLog(
+        "UI: Error - $e",
+        source: "log_view.dart",
+        level: 1,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Masalah: $e"), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      // Apapun yang terjadi, loading harus mati
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -149,11 +219,28 @@ class _LogViewState extends State<LogView> {
                 }
 
                 // HOMEWORK: Jalankan fungsi tambah dengan category
-                _controller.addLog(
-                  _titleController.text,
-                  _contentController.text,
-                  category: _selectedCategory,
-                );
+                _controller
+                    .addLog(
+                      _titleController.text,
+                      _contentController.text,
+                      category: _selectedCategory,
+                    )
+                    .then((_) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('✓ Data berhasil disimpan ke Cloud!'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    })
+                    .catchError((error) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('✗ Gagal: $error'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    });
 
                 // Bersihkan input dan tutup dialog
                 _titleController.clear();
@@ -257,12 +344,33 @@ class _LogViewState extends State<LogView> {
                 }
 
                 // HOMEWORK: Update dengan category
-                _controller.updateLog(
-                  index,
-                  _titleController.text,
-                  _contentController.text,
-                  category: _selectedCategory,
-                );
+                _controller
+                    .updateLog(
+                      index,
+                      _titleController.text,
+                      _contentController.text,
+                      category: _selectedCategory,
+                    )
+                    .then((_) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('✓ Data berhasil diupdate di Cloud!'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      }
+                    })
+                    .catchError((error) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('✗ Gagal: $error'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    });
                 _titleController.clear();
                 _contentController.clear();
                 Navigator.pop(context);
@@ -363,7 +471,44 @@ class _LogViewState extends State<LogView> {
             child: ValueListenableBuilder<List<LogModel>>(
               valueListenable: _controller.filteredLogsNotifier,
               builder: (context, currentLogs, child) {
-                // HOMEWORK: Enhanced empty state
+                // 1. Tampilan Loading saat koneksi ke Cloud
+                if (_isLoading) {
+                  return const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text("Menghubungkan ke MongoDB Atlas..."),
+                      ],
+                    ),
+                  );
+                }
+
+                // 2. Tampilan jika loading sudah selesai tapi data kosong
+                if (currentLogs.isEmpty && _searchController.text.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.cloud_off,
+                          size: 64,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(height: 16),
+                        const Text("Belum ada catatan di Cloud."),
+                        const SizedBox(height: 10),
+                        ElevatedButton(
+                          onPressed: _showAddLogDialog,
+                          child: const Text("Buat Catatan Pertama"),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                // 3. Tampilan hasil pencarian kosong
                 if (currentLogs.isEmpty) {
                   return Center(
                     child: Column(
@@ -468,18 +613,34 @@ class _LogViewState extends State<LogView> {
                           ),
                         );
                       },
-                      onDismissed: (direction) {
+                      onDismissed: (direction) async {
                         // Find real index in logsNotifier
                         final realIndex = _controller.logsNotifier.value
                             .indexWhere((l) => l.date == log.date);
-                        _controller.removeLog(realIndex);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('"${log.title}" dihapus'),
-                            backgroundColor: Colors.green,
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
+
+                        try {
+                          await _controller.removeLog(realIndex);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  '✓ "${log.title}" dihapus dari Cloud',
+                                ),
+                                backgroundColor: Colors.green,
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('✗ Gagal hapus: $e'),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
+                        }
                       },
                       child:
                           // HOMEWORK: Card with category color
@@ -565,6 +726,12 @@ class _LogViewState extends State<LogView> {
                                     const SizedBox(height: 6),
                                     Row(
                                       children: [
+                                        Icon(
+                                          Icons.cloud_done,
+                                          size: 14,
+                                          color: Colors.green,
+                                        ),
+                                        const SizedBox(width: 4),
                                         Icon(
                                           Icons.access_time,
                                           size: 14,
